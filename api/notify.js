@@ -6,7 +6,13 @@ import { Redis } from "@upstash/redis";
 import webpush from "web-push";
 import crypto from "node:crypto";
 
-const redis = Redis.fromEnv();
+// Vercel's Upstash marketplace integration names these KV_REST_API_URL /
+// KV_REST_API_TOKEN, not the UPSTASH_REDIS_REST_* names Redis.fromEnv()
+// looks for by default — so the client is constructed explicitly instead.
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL,
+  token: process.env.KV_REST_API_TOKEN,
+});
 
 webpush.setVapidDetails(
   "https://balticsignalmonitor.com",

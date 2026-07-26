@@ -28,6 +28,9 @@ nothing else.
 - `WEB_PUSH_NOTIFY_SECRET` — a random shared secret (e.g.
   `openssl rand -hex 32`), matching the same value stored as a GitHub
   Actions secret on the main project's repo.
-- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — auto-injected
-  by Vercel when you connect an Upstash Redis database via the Storage
-  tab.
+- `KV_REST_API_URL` / `KV_REST_API_TOKEN` — auto-injected by Vercel when
+  you connect an Upstash Redis database via the Storage tab (Vercel's
+  marketplace integration uses this naming, not the plain
+  `UPSTASH_REDIS_REST_*` names the `@upstash/redis` SDK's `fromEnv()`
+  helper looks for by default — that's why the client is constructed
+  explicitly in both functions instead of using `fromEnv()`).
