@@ -20,6 +20,12 @@ webpush.setVapidDetails(
   process.env.VAPID_PRIVATE_KEY
 );
 
+// Same 365-day cutoff api/prune.js enforces on its own schedule — checked
+// here too so a notify call doesn't waste a send attempt on something
+// already past expiry, and so expiry still happens even on a notify-only
+// run if prune.js were ever skipped.
+const MAX_SUBSCRIPTION_AGE_MS = 365 * 24 * 60 * 60 * 1000;
+
 function isAuthorized(req) {
   const secret = process.env.WEB_PUSH_NOTIFY_SECRET;
   if (!secret) return false;
@@ -66,6 +72,12 @@ export default async function handler(req, res) {
       try {
         sub = typeof raw === "string" ? JSON.parse(raw) : raw;
       } catch {
+        await redis.hdel("subscriptions", key);
+        pruned++;
+        return;
+      }
+      const createdAt = sub.createdAt ? new Date(sub.createdAt).getTime() : 0;
+      if (!createdAt || Date.now() - createdAt > MAX_SUBSCRIPTION_AGE_MS) {
         await redis.hdel("subscriptions", key);
         pruned++;
         return;
