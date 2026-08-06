@@ -52,6 +52,24 @@ push alerts: four small Vercel serverless functions.
   reshaping the response. Cached at the edge for 5 minutes
   (`s-maxage=300`) since the underlying data only changes on a scan or
   health check, not continuously.
+- `api/telegram-webhook.js` — instant replacement for the old polling-
+  based `/scan`, `/mute`, `/ignore`, `/quietmode` command listener that
+  used to run inside the scheduled scan itself (removed for averaging
+  ~1.8h of lag on GitHub's best-effort schedule). Telegram delivers
+  webhook updates instantly; this is the receiving end, since GitHub
+  Actions has no way to receive an inbound request at all. Two
+  independent checks before it acts on anything: Telegram's own webhook
+  secret token (proves the request came from Telegram), then the
+  sender's chat id must match `TELEGRAM_OWNER_CHAT_ID` exactly (proves
+  it's you, not some other user who messaged the bot) — anything else
+  is silently ignored, still 200-ing back to Telegram so it doesn't
+  retry, but taking no action and sending no reply. `/scan` triggers a
+  `scan.yml` workflow dispatch via the GitHub API; `/mute <keyword>` and
+  `/ignore <source>` commit an update to the main repo's
+  `mute_config.json`; `/quietmode` toggles `escalation_only` in
+  `settings.json`. All three commit/dispatch paths use the same GitHub
+  Contents/Actions API the old in-repo code touched, just called from
+  here instead of from inside a scan.
 
 Subscriptions are stored in Upstash Redis (connected via Vercel's
 Storage tab). No personal data is collected — a push subscription is
@@ -88,3 +106,41 @@ nothing else.
   `UPSTASH_REDIS_REST_*` names the `@upstash/redis` SDK's `fromEnv()`
   helper looks for by default — that's why the client is constructed
   explicitly in every function instead of using `fromEnv()`).
+- `TELEGRAM_WEBHOOK_SECRET` — a random secret (e.g. `openssl rand -hex
+  32`) that only Telegram and this function know. Set here, then passed
+  to Telegram's `setWebhook` call (see Setup below) as `secret_token` —
+  Telegram echoes it back on every webhook delivery as the
+  `X-Telegram-Bot-Api-Secret-Token` header, which `api/telegram-webhook.js`
+  checks before doing anything else.
+- `TELEGRAM_BOT_TOKEN` — same bot token already used by the main repo.
+  Needed here to send confirmation replies (e.g. "Scan triggered").
+  Commands still work without it, just silently, with no reply.
+- `TELEGRAM_OWNER_CHAT_ID` — same value as the main repo's
+  `TELEGRAM_CHAT_ID` secret (your own private chat with the bot). This is
+  the second auth layer above — any command from a different chat id is
+  ignored.
+- `GITHUB_PAT` — a GitHub **fine-grained** personal access token, scoped
+  to **only** the `baltic-monitor` repository, with exactly two
+  permissions: Contents (Read and write) and Actions (Read and write).
+  Nothing else — this token can commit files and trigger workflow runs in
+  that one repo and nothing more. Generate at
+  github.com/settings/personal-access-tokens/new.
+
+### Setup — Telegram webhook commands
+1. Set `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`,
+   `TELEGRAM_OWNER_CHAT_ID`, and `GITHUB_PAT` in Vercel (see above).
+2. Register the webhook with Telegram — run this once, filling in your
+   own bot token and the exact `TELEGRAM_WEBHOOK_SECRET` value from step 1
+   (this project has no access to your bot token, so this step can't be
+   automated — it's a one-time call you make yourself):
+   ```
+   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+     -d url="https://baltic-monitor-push.vercel.app/api/telegram-webhook" \
+     -d secret_token="<YOUR_TELEGRAM_WEBHOOK_SECRET>"
+   ```
+   A `{"ok":true,"result":true,...}` response confirms it's registered.
+3. That's it — `/scan`, `/mute <keyword>`, `/ignore <source name>`, and
+   `/quietmode` sent to the bot from your own chat now respond within a
+   couple seconds instead of up to ~1.8h.
+4. To undo: `curl -X POST "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`
+   goes back to however the bot behaved before (no automatic commands).
