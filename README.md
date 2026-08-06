@@ -20,6 +20,38 @@ push alerts: four small Vercel serverless functions.
   from the two above) showing how many subscriptions are stored and
   letting the project owner delete one or all of them, without needing
   to open the Vercel/Upstash dashboard directly.
+- `api/status.js` — a public, documented read-only API for the same
+  live data shown on the landing page: `GET
+  https://baltic-monitor-push.vercel.app/api/status`. No auth, no rate
+  limit, `Access-Control-Allow-Origin: *` — this mirrors data that's
+  already fully public on the site. Meant for anyone who wants to build
+  on this data (a script, another site, a bot) without scraping HTML or
+  depending on `status.json`'s exact shape, which is the landing page's
+  own internal plumbing and can change whenever that page's UI needs
+  something new. Response shape (`schema_version: 1`):
+  ```json
+  {
+    "schema_version": 1,
+    "level": "QUIET | WATCH | WARN",
+    "status": "operating_normally | attention_needed",
+    "generated_at": "...", "tracking_since": "...",
+    "scans": { "total": 0, "quiet": 0, "watch": 0, "warn": 0 },
+    "sources": { "total": 0, "tier1": 0, "tier2": 0, "tier3": 0 },
+    "corrections_count": 0,
+    "recent_scans": [ { "ts", "level", "flagged_count", "failed_count",
+      "sources_scanned", "gdelt_ran", "new_items_count", "stale_count",
+      "tier3_tracked_count" } ],
+    "recent_items": [ { "title", "link", "source", "tier", "level", "ts",
+      "categories", "gdelt": { "category", "subcategory", "event_code",
+      "goldstein" } | null } ],
+    "recent_corrections": [ { "ts", "context", "text" } ],
+    "recent_updates": [ { "ts", "title", "text" } ]
+  }
+  ```
+  A future breaking change bumps `schema_version` rather than silently
+  reshaping the response. Cached at the edge for 5 minutes
+  (`s-maxage=300`) since the underlying data only changes on a scan or
+  health check, not continuously.
 
 Subscriptions are stored in Upstash Redis (connected via Vercel's
 Storage tab). No personal data is collected — a push subscription is
