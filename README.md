@@ -1,7 +1,8 @@
 # Baltic Signal Monitor — Push Backend
 
-This repo holds only the server side of Baltic Signal Monitor's browser
-push alerts: four small Vercel serverless functions.
+This repo holds the server side of Baltic Signal Monitor's browser push
+alerts, plus a couple of related integrations that ended up living here
+since they're also small Vercel serverless functions: six in total.
 
 - `api/subscribe.js` — a visitor's browser POSTs its push subscription
   here after clicking "Enable Browser Alerts" on the landing page.
@@ -144,3 +145,20 @@ nothing else.
    couple seconds instead of up to ~1.8h.
 4. To undo: `curl -X POST "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`
    goes back to however the bot behaved before (no automatic commands).
+
+## Tests
+
+`npm test` (Node's built-in test runner, no extra dependency) runs
+`test/telegram-webhook.test.js` — 13 tests covering the endpoint with
+real write access to the main repo: both auth layers (wrong/missing
+webhook secret, wrong sender chat id — each must produce zero API calls,
+not just a rejected response), every command (`/scan`, `/mute`,
+`/ignore`, `/quietmode`, `/help`), and edge cases (no-argument usage
+text, an already-muted keyword not duplicating). Runs on every push via
+`.github/workflows/tests.yml`, same pattern as the main `baltic-monitor`
+repo's `tests.yml`.
+
+The other five functions (`subscribe`/`notify`/`prune`/`admin`/`status`)
+don't have automated tests yet — `telegram-webhook.js` came first since
+it's the one with real write access to another repo, the highest-value
+place to have regression coverage. Worth adding to the others over time.
