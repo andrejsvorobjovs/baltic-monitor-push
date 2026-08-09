@@ -47,10 +47,14 @@ async function githubRequest(path, options = {}) {
   return resp;
 }
 
-async function triggerScan() {
+async function triggerScan(extraInputs = {}) {
   const resp = await githubRequest(
     `/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${SCAN_WORKFLOW_FILE}/dispatches`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref: "main" }) }
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "main", inputs: extraInputs }),
+    }
   );
   if (resp.status !== 204) {
     throw new Error(`workflow dispatch failed: ${resp.status} ${await resp.text()}`);
@@ -173,6 +177,16 @@ export default async function handler(req, res) {
     if (text === "/scan") {
       await triggerScan();
       await replyToTelegram(chatId, "Scan triggered. It'll post here (and to the channel, if relevant) in about a minute.");
+    } else if (text === "/gpsjam") {
+      // Phase 1 only (see baltic-monitor's README for the full design
+      // discussion): informational, on-demand, never touches scoring or
+      // alerting. Reuses the same scan.yml dispatch mechanism as /scan,
+      // just with the gpsjam_check input set instead of a full scan --
+      // main.py's send_gpsjam_status() does the actual fetch/format/send,
+      // private chat only, so nothing further happens here beyond
+      // triggering it and confirming receipt.
+      await triggerScan({ gpsjam_check: "true" });
+      await replyToTelegram(chatId, "Checking GPSJam's current Baltic picture -- reply coming in about 30 seconds.");
     } else if (text.startsWith("/mute")) {
       await handleMuteOrIgnore("muted_keywords", text.slice("/mute".length).trim(), chatId);
     } else if (text.startsWith("/ignore")) {
@@ -181,7 +195,8 @@ export default async function handler(req, res) {
       await handleQuietMode(chatId);
     } else if (text === "/help" || text === "/start") {
       await replyToTelegram(chatId,
-        "Commands:\n/scan -- trigger a scan now\n/mute <keyword> -- mute a keyword\n" +
+        "Commands:\n/scan -- trigger a scan now\n/gpsjam -- check today's Baltic GPS-jamming picture (informational only, never an alert)\n" +
+        "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
     // Anything else: no reply, matches the old polling listener's behavior

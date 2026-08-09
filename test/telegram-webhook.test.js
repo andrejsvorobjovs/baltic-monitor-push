@@ -123,6 +123,27 @@ test("/scan triggers a workflow dispatch and replies", async () => {
   assert.ok(urls.some((u) => u.includes("api.telegram.org")));
 });
 
+test("/gpsjam triggers a workflow dispatch with gpsjam_check set and replies", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/gpsjam" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  const dispatchCall = calls.find((c) => c.url.includes("/actions/workflows/scan.yml/dispatches"));
+  assert.ok(dispatchCall, "expected a workflow dispatch call");
+  const body = JSON.parse(dispatchCall.opts.body);
+  assert.deepEqual(body.inputs, { gpsjam_check: "true" });
+  const reply = calls.find((c) => c.url.includes("api.telegram.org"));
+  assert.ok(reply, "expected a confirmation reply");
+});
+
+test("/scan's workflow dispatch still sends empty inputs (unchanged behavior)", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/scan" } }, "wh-secret-123"), res);
+  const dispatchCall = calls.find((c) => c.url.includes("/actions/workflows/scan.yml/dispatches"));
+  assert.ok(dispatchCall);
+  const body = JSON.parse(dispatchCall.opts.body);
+  assert.deepEqual(body.inputs, {});
+});
+
 test("/mute <keyword> reads, appends, and writes mute_config.json", async () => {
   const res = makeRes();
   await handler(makeReq({ message: { chat: { id: 999888 }, text: "/mute wildfire" } }, "wh-secret-123"), res);
@@ -200,7 +221,9 @@ test("/help replies with the command list", async () => {
   await handler(makeReq({ message: { chat: { id: 999888 }, text: "/help" } }, "wh-secret-123"), res);
   const reply = calls.find((c) => c.url.includes("api.telegram.org"));
   assert.ok(reply);
-  assert.match(JSON.parse(reply.opts.body).text, /\/scan/);
+  const helpText = JSON.parse(reply.opts.body).text;
+  assert.match(helpText, /\/scan/);
+  assert.match(helpText, /\/gpsjam/);
 });
 
 test("a message with no text is ignored without error", async () => {

@@ -65,10 +65,15 @@ since they're also small Vercel serverless functions: six in total.
   it's you, not some other user who messaged the bot) — anything else
   is silently ignored, still 200-ing back to Telegram so it doesn't
   retry, but taking no action and sending no reply. `/scan` triggers a
-  `scan.yml` workflow dispatch via the GitHub API; `/mute <keyword>` and
-  `/ignore <source>` commit an update to the main repo's
+  `scan.yml` workflow dispatch via the GitHub API; `/gpsjam` triggers
+  the same workflow with its `gpsjam_check` input set instead, which
+  runs `python main.py gpsjam_status` in the main repo — an on-demand,
+  informational-only check of GPSJam's current Baltic GPS-jamming
+  picture (see that repo's own README for the full design discussion;
+  private chat only, never wired into scoring or alerting); `/mute
+  <keyword>` and `/ignore <source>` commit an update to the main repo's
   `mute_config.json`; `/quietmode` toggles `escalation_only` in
-  `settings.json`. All three commit/dispatch paths use the same GitHub
+  `settings.json`. All commit/dispatch paths use the same GitHub
   Contents/Actions API the old in-repo code touched, just called from
   here instead of from inside a scan.
 
@@ -140,21 +145,24 @@ nothing else.
      -d secret_token="<YOUR_TELEGRAM_WEBHOOK_SECRET>"
    ```
    A `{"ok":true,"result":true,...}` response confirms it's registered.
-3. That's it — `/scan`, `/mute <keyword>`, `/ignore <source name>`, and
-   `/quietmode` sent to the bot from your own chat now respond within a
-   couple seconds instead of up to ~1.8h.
+3. That's it — `/scan`, `/gpsjam`, `/mute <keyword>`, `/ignore <source
+   name>`, and `/quietmode` sent to the bot from your own chat now
+   respond within a couple seconds (or ~30s for `/gpsjam` and `/scan`,
+   which wait on a real workflow run) instead of up to ~1.8h.
 4. To undo: `curl -X POST "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`
    goes back to however the bot behaved before (no automatic commands).
 
 ## Tests
 
 `npm test` (Node's built-in test runner, no extra dependency) runs
-`test/telegram-webhook.test.js` — 13 tests covering the endpoint with
+`test/telegram-webhook.test.js` — 15 tests covering the endpoint with
 real write access to the main repo: both auth layers (wrong/missing
 webhook secret, wrong sender chat id — each must produce zero API calls,
-not just a rejected response), every command (`/scan`, `/mute`,
-`/ignore`, `/quietmode`, `/help`), and edge cases (no-argument usage
-text, an already-muted keyword not duplicating). Runs on every push via
+not just a rejected response), every command (`/scan`, `/gpsjam`,
+`/mute`, `/ignore`, `/quietmode`, `/help`), and edge cases (no-argument
+usage text, an already-muted keyword not duplicating, `/gpsjam`'s
+dispatch actually carries the `gpsjam_check` input while `/scan`'s
+still dispatches with no extra inputs). Runs on every push via
 `.github/workflows/tests.yml`, same pattern as the main `baltic-monitor`
 repo's `tests.yml`.
 
