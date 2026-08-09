@@ -187,6 +187,16 @@ export default async function handler(req, res) {
       // triggering it and confirming receipt.
       await triggerScan({ gpsjam_check: "true" });
       await replyToTelegram(chatId, "Checking GPSJam's current Baltic picture -- reply coming in about 30 seconds.");
+    } else if (text === "/ais") {
+      // Phase 1 only, same shape as /gpsjam above (see baltic-monitor's
+      // own README for the full design discussion): informational,
+      // on-demand, never touches scoring or alerting. main.py's
+      // send_ais_status() connects to aisstream.io for a short listen
+      // window and does the actual fetch/format/send, private chat
+      // only -- replies "not configured" if AISSTREAM_API_KEY isn't set
+      // yet, rather than failing silently.
+      await triggerScan({ ais_check: "true" });
+      await replyToTelegram(chatId, "Checking a live AIS snapshot of the Baltic -- reply coming in about 30-40 seconds.");
     } else if (text.startsWith("/mute")) {
       await handleMuteOrIgnore("muted_keywords", text.slice("/mute".length).trim(), chatId);
     } else if (text.startsWith("/ignore")) {
@@ -196,6 +206,7 @@ export default async function handler(req, res) {
     } else if (text === "/help" || text === "/start") {
       await replyToTelegram(chatId,
         "Commands:\n/scan -- trigger a scan now\n/gpsjam -- check today's Baltic GPS-jamming picture (informational only, never an alert)\n" +
+        "/ais -- short live AIS ship snapshot of the Baltic (informational only, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
