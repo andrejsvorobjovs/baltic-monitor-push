@@ -68,11 +68,11 @@ export default async function handler(req, res) {
   }
 
   let upstream;
+  let timeout;
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     const r = await fetch(SOURCE_URL, { signal: controller.signal, cache: "no-store" });
-    clearTimeout(timeout);
     if (!r.ok) throw new Error(`upstream responded ${r.status}`);
     upstream = await r.json();
   } catch (err) {
@@ -81,6 +81,14 @@ export default async function handler(req, res) {
     console.error("status.js: failed to fetch upstream status.json:", err);
     res.status(502).json({ error: "upstream status temporarily unavailable" });
     return;
+  } finally {
+    // Was only cleared on the success path before -- if fetch() itself
+    // rejected (network error, not just a non-OK response), this timer
+    // was left dangling for the rest of FETCH_TIMEOUT_MS. Harmless in
+    // production (the serverless invocation ends anyway), but real: it's
+    // exactly the kind of resource leak this project treats as a bug
+    // wherever it's found. finally guarantees it's cleared every path.
+    clearTimeout(timeout);
   }
 
   const d = upstream;
