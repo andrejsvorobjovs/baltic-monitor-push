@@ -147,6 +147,18 @@ test("/ais triggers a workflow dispatch with ais_check set and replies", async (
   assert.ok(reply, "expected a confirmation reply");
 });
 
+test("/military triggers a workflow dispatch with military_check set and replies", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/military" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  const dispatchCall = calls.find((c) => c.url.includes("/actions/workflows/scan.yml/dispatches"));
+  assert.ok(dispatchCall, "expected a workflow dispatch call");
+  const body = JSON.parse(dispatchCall.opts.body);
+  assert.deepEqual(body.inputs, { military_check: "true" });
+  const reply = calls.find((c) => c.url.includes("api.telegram.org"));
+  assert.ok(reply, "expected a confirmation reply");
+});
+
 test("/scan's workflow dispatch still sends empty inputs (unchanged behavior)", async () => {
   const res = makeRes();
   await handler(makeReq({ message: { chat: { id: 999888 }, text: "/scan" } }, "wh-secret-123"), res);
@@ -237,6 +249,7 @@ test("/help replies with the command list", async () => {
   assert.match(helpText, /\/scan/);
   assert.match(helpText, /\/gpsjam/);
   assert.match(helpText, /\/ais/);
+  assert.match(helpText, /\/military/);
 });
 
 test("a message with no text is ignored without error", async () => {
