@@ -207,6 +207,15 @@ export default async function handler(req, res) {
       // case the way /ais has.
       await triggerScan({ military_check: "true" });
       await replyToTelegram(chatId, "Checking a live military aircraft snapshot of the Baltic -- reply coming in about 30-40 seconds.");
+    } else if (text === "/notam") {
+      // Phase 1 only, Latvia only (see baltic-monitor's own README for
+      // the full design discussion): informational, on-demand, never
+      // touches scoring or alerting. main.py's send_notam_status()
+      // queries ais.lgs.lv (Latvia's official AIS, no login/API key
+      // needed) and does the actual fetch/format/send, filtered to
+      // military-relevant NOTAMs, private chat only.
+      await triggerScan({ notam_check: "true" });
+      await replyToTelegram(chatId, "Checking current Latvia NOTAMs -- reply coming in about 20-30 seconds.");
     } else if (text.startsWith("/mute")) {
       await handleMuteOrIgnore("muted_keywords", text.slice("/mute".length).trim(), chatId);
     } else if (text.startsWith("/ignore")) {
@@ -218,6 +227,7 @@ export default async function handler(req, res) {
         "Commands:\n/scan -- trigger a scan now\n/gpsjam -- check today's Baltic GPS-jamming picture (informational only, never an alert)\n" +
         "/ais -- short live AIS ship snapshot of the Baltic (informational only, never an alert)\n" +
         "/military -- live military aircraft snapshot of the Baltic (informational only, never an alert)\n" +
+        "/notam -- current Latvia NOTAMs filtered to military-relevant ones (informational only, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
