@@ -216,6 +216,19 @@ export default async function handler(req, res) {
       // military-relevant NOTAMs, private chat only.
       await triggerScan({ notam_check: "true" });
       await replyToTelegram(chatId, "Checking current Latvia NOTAMs -- reply coming in about 20-30 seconds.");
+    } else if (text === "/notmar") {
+      // Phase 1 only, Estonia and Latvia only (Lithuania's official site
+      // blocks automated access, same gap as its aviation NOTAM feed) --
+      // informational, on-demand, never touches scoring or alerting.
+      // main.py's send_notmar_status() fetches both countries' free
+      // official monthly PDF bulletins and does the actual fetch/parse/
+      // format/send, filtered to security-relevant keyword matches
+      // (military, submarine cable, restricted areas, etc.), private
+      // chat only. See baltic-monitor's own module comment above
+      // NOTMAR_ESTONIA_LISTING_URL for why this shows raw keyword-
+      // matched excerpts rather than individually parsed notices.
+      await triggerScan({ notmar_check: "true" });
+      await replyToTelegram(chatId, "Checking current Baltic Notices to Mariners -- reply coming in about 20-30 seconds.");
     } else if (text.startsWith("/mute")) {
       await handleMuteOrIgnore("muted_keywords", text.slice("/mute".length).trim(), chatId);
     } else if (text.startsWith("/ignore")) {
@@ -228,6 +241,7 @@ export default async function handler(req, res) {
         "/ais -- short live AIS ship snapshot of the Baltic (informational only, never an alert)\n" +
         "/military -- live military aircraft snapshot of the Baltic (informational only, never an alert)\n" +
         "/notam -- current Latvia NOTAMs filtered to military-relevant ones (informational only, never an alert)\n" +
+        "/notmar -- current Estonia/Latvia Notices to Mariners filtered to security-relevant keywords (informational only, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
