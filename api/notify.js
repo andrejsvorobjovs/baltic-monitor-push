@@ -26,6 +26,21 @@ webpush.setVapidDetails(
 // run if prune.js were ever skipped.
 const MAX_SUBSCRIPTION_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 
+// Promise.allSettled around each entry's whole handler already stops one
+// bad subscription from failing the batch, but the hdel calls inside
+// weren't individually guarded -- a transient Upstash error mid-batch
+// silently dropped that one task with no log line, and pruned/sent/failed
+// could quietly stop summing to total with no visibility into why.
+async function safeHdel(key, reason) {
+  try {
+    await redis.hdel("subscriptions", key);
+    return true;
+  } catch (err) {
+    console.error(`failed to delete subscription ${key} (${reason}):`, err);
+    return false;
+  }
+}
+
 function isAuthorized(req) {
   const secret = process.env.WEB_PUSH_NOTIFY_SECRET;
   if (!secret) return false;
@@ -72,14 +87,12 @@ export default async function handler(req, res) {
       try {
         sub = typeof raw === "string" ? JSON.parse(raw) : raw;
       } catch {
-        await redis.hdel("subscriptions", key);
-        pruned++;
+        if (await safeHdel(key, "unparseable")) pruned++;
         return;
       }
       const createdAt = sub.createdAt ? new Date(sub.createdAt).getTime() : 0;
       if (!createdAt || Date.now() - createdAt > MAX_SUBSCRIPTION_AGE_MS) {
-        await redis.hdel("subscriptions", key);
-        pruned++;
+        if (await safeHdel(key, "expired")) pruned++;
         return;
       }
       try {
@@ -91,8 +104,7 @@ export default async function handler(req, res) {
         // endpoint expired) — anything else (400/413/429/etc.) is not
         // proof of death, so it's logged and skipped, not deleted.
         if (statusCode === 404 || statusCode === 410) {
-          await redis.hdel("subscriptions", key);
-          pruned++;
+          if (await safeHdel(key, `dead: ${statusCode}`)) pruned++;
         } else {
           failed++;
           console.error(`push send failed (status ${statusCode}):`, err && err.body);

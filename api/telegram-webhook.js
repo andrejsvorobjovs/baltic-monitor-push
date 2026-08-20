@@ -144,8 +144,14 @@ export default async function handler(req, res) {
   }
 
   // Layer 1: prove this request actually came from Telegram.
+  // The explicit env-var guard matters: without it, an unset
+  // TELEGRAM_WEBHOOK_SECRET (deploy misconfiguration, accidentally
+  // cleared env var) makes timingSafeEqual compare two empty buffers --
+  // 0 === 0 passes -- so a request that simply OMITS the secret header
+  // would pass this layer entirely. admin.js/notify.js/prune.js already
+  // guard the same way; this closes the one place that didn't.
   const secretHeader = req.headers["x-telegram-bot-api-secret-token"];
-  if (!timingSafeEqual(secretHeader, process.env.TELEGRAM_WEBHOOK_SECRET)) {
+  if (!process.env.TELEGRAM_WEBHOOK_SECRET || !timingSafeEqual(secretHeader, process.env.TELEGRAM_WEBHOOK_SECRET)) {
     // Deliberately 401, not 200 -- unlike an unauthorized *sender* below,
     // a bad secret token means this isn't even a genuine Telegram
     // delivery, so there's no "don't make Telegram retry" concern.
@@ -229,9 +235,13 @@ export default async function handler(req, res) {
       // matched excerpts rather than individually parsed notices.
       await triggerScan({ notmar_check: "true" });
       await replyToTelegram(chatId, "Checking current Baltic Notices to Mariners -- reply coming in about 20-30 seconds.");
-    } else if (text.startsWith("/mute")) {
+    } else if (text === "/mute" || text.startsWith("/mute ")) {
+      // Was text.startsWith("/mute") with no word boundary, so a typo
+      // like "/mutedecision" (no space) parsed as /mute with keyword
+      // "decision" instead of falling through to "unrecognized, no
+      // action" -- exact-match style, same as every other command here.
       await handleMuteOrIgnore("muted_keywords", text.slice("/mute".length).trim(), chatId);
-    } else if (text.startsWith("/ignore")) {
+    } else if (text === "/ignore" || text.startsWith("/ignore ")) {
       await handleMuteOrIgnore("ignored_sources", text.slice("/ignore".length).trim(), chatId);
     } else if (text === "/quietmode") {
       await handleQuietMode(chatId);
