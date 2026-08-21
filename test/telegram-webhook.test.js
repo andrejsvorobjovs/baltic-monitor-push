@@ -207,6 +207,34 @@ test("/firms triggers a workflow dispatch with firms_check set and replies", asy
   assert.ok(reply, "expected a confirmation reply");
 });
 
+test("/satellite with no site sends satellite_check=list and replies", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/satellite" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  const dispatchCall = calls.find((c) => c.url.includes("/actions/workflows/scan.yml/dispatches"));
+  assert.ok(dispatchCall, "expected a workflow dispatch call");
+  const body = JSON.parse(dispatchCall.opts.body);
+  assert.deepEqual(body.inputs, { satellite_check: "list" });
+  const reply = calls.find((c) => c.url.includes("api.telegram.org"));
+  assert.ok(reply, "expected a confirmation reply");
+  const replyText = JSON.parse(reply.opts.body).text;
+  assert.match(replyText, /available satellite imagery sites/);
+});
+
+test("/satellite <site> passes the site key through as satellite_check and replies", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/satellite baltiysk" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  const dispatchCall = calls.find((c) => c.url.includes("/actions/workflows/scan.yml/dispatches"));
+  assert.ok(dispatchCall, "expected a workflow dispatch call");
+  const body = JSON.parse(dispatchCall.opts.body);
+  assert.deepEqual(body.inputs, { satellite_check: "baltiysk" });
+  const reply = calls.find((c) => c.url.includes("api.telegram.org"));
+  assert.ok(reply, "expected a confirmation reply");
+  const replyText = JSON.parse(reply.opts.body).text;
+  assert.match(replyText, /"baltiysk"/);
+});
+
 test("/scan's workflow dispatch still sends empty inputs (unchanged behavior)", async () => {
   const res = makeRes();
   await handler(makeReq({ message: { chat: { id: 999888 }, text: "/scan" } }, "wh-secret-123"), res);
@@ -312,6 +340,7 @@ test("/help replies with the command list", async () => {
   assert.match(helpText, /\/notam/);
   assert.match(helpText, /\/notmar/);
   assert.match(helpText, /\/firms/);
+  assert.match(helpText, /\/satellite/);
 });
 
 test("a message with no text is ignored without error", async () => {
