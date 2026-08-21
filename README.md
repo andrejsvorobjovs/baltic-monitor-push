@@ -168,7 +168,7 @@ test file per function, all six now covered:
   wrong sender chat id, and an unset `TELEGRAM_WEBHOOK_SECRET` itself —
   each must produce zero API calls, not just a rejected response), every
   command (`/scan`, `/gpsjam`, `/ais`, `/military`, `/notam`, `/notmar`,
-  `/mute`, `/ignore`, `/quietmode`, `/help`), and edge cases (no-argument
+  `/firms`, `/mute`, `/ignore`, `/quietmode`, `/help`), and edge cases (no-argument
   usage text, an already-muted keyword not duplicating, a mistyped
   command like `/mutedecision` correctly falling through as
   unrecognized, each command's dispatch carrying its own extra input

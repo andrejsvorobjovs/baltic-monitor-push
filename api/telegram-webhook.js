@@ -235,6 +235,18 @@ export default async function handler(req, res) {
       // matched excerpts rather than individually parsed notices.
       await triggerScan({ notmar_check: "true" });
       await replyToTelegram(chatId, "Checking current Baltic Notices to Mariners -- reply coming in about 20-30 seconds.");
+    } else if (text === "/firms") {
+      // Phase 1 only, same shape as /gpsjam, /ais, /military, /notam,
+      // /notmar above (see baltic-monitor's own README for the full
+      // design discussion): informational, on-demand, never touches
+      // scoring or alerting. main.py's send_firms_status() queries NASA
+      // FIRMS's free satellite thermal-hotspot feed (VIIRS_SNPP_NRT) and
+      // does the actual fetch/format/send, private chat only -- replies
+      // "not configured" if FIRMS_MAP_KEY isn't set yet, same pattern as
+      // /ais. Raw satellite heat data, not confirmed military activity --
+      // wildfires and agricultural burning trigger it too.
+      await triggerScan({ firms_check: "true" });
+      await replyToTelegram(chatId, "Checking NASA FIRMS satellite thermal hotspots for the Baltic -- reply coming in about 20-30 seconds.");
     } else if (text === "/mute" || text.startsWith("/mute ")) {
       // Was text.startsWith("/mute") with no word boundary, so a typo
       // like "/mutedecision" (no space) parsed as /mute with keyword
@@ -252,6 +264,7 @@ export default async function handler(req, res) {
         "/military -- live military aircraft snapshot of the Baltic (informational only, never an alert)\n" +
         "/notam -- current Latvia NOTAMs filtered to military-relevant ones (informational only, never an alert)\n" +
         "/notmar -- current Estonia/Latvia Notices to Mariners filtered to security-relevant keywords (informational only, never an alert)\n" +
+        "/firms -- NASA satellite thermal hotspot snapshot of the Baltic (informational only, not confirmed activity, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
