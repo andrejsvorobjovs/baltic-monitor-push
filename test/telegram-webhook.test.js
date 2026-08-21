@@ -107,6 +107,18 @@ test("rejects a missing webhook secret header with 401", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("rejects a request with no secret header when TELEGRAM_WEBHOOK_SECRET itself is unset -- must not fail open", async () => {
+  // Real bug: without an explicit env-var guard, an unset
+  // TELEGRAM_WEBHOOK_SECRET made timingSafeEqual compare two empty
+  // buffers (0 === 0 passes), so a request that simply omitted the
+  // secret header would pass layer 1 entirely.
+  delete process.env.TELEGRAM_WEBHOOK_SECRET;
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/scan" } }, undefined), res);
+  assert.equal(res.statusCode, 401);
+  assert.equal(calls.length, 0);
+});
+
 test("silently ignores a correct secret but wrong sender chat id -- 200, no API calls, no reply", async () => {
   const res = makeRes();
   await handler(makeReq({ message: { chat: { id: 111111 }, text: "/scan" } }, "wh-secret-123"), res);
@@ -183,6 +195,18 @@ test("/notmar triggers a workflow dispatch with notmar_check set and replies", a
   assert.ok(reply, "expected a confirmation reply");
 });
 
+test("/firms triggers a workflow dispatch with firms_check set and replies", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/firms" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  const dispatchCall = calls.find((c) => c.url.includes("/actions/workflows/scan.yml/dispatches"));
+  assert.ok(dispatchCall, "expected a workflow dispatch call");
+  const body = JSON.parse(dispatchCall.opts.body);
+  assert.deepEqual(body.inputs, { firms_check: "true" });
+  const reply = calls.find((c) => c.url.includes("api.telegram.org"));
+  assert.ok(reply, "expected a confirmation reply");
+});
+
 test("/scan's workflow dispatch still sends empty inputs (unchanged behavior)", async () => {
   const res = makeRes();
   await handler(makeReq({ message: { chat: { id: 999888 }, text: "/scan" } }, "wh-secret-123"), res);
@@ -212,6 +236,17 @@ test("/mute with no argument sends a usage reply and writes nothing", async () =
   const reply = calls.find((c) => c.url.includes("api.telegram.org"));
   assert.ok(reply);
   assert.match(JSON.parse(reply.opts.body).text, /Usage/);
+});
+
+test("a mistyped command like /mutedecision (no space) is treated as unrecognized, not /mute", async () => {
+  // Real bug: text.startsWith("/mute") with no word boundary parsed
+  // "/mutedecision" as /mute with keyword "decision" instead of falling
+  // through to "unrecognized, no action" -- exact-match style, same as
+  // every other command here.
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/mutedecision" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.length, 0, "an unrecognized command must trigger no API calls at all");
 });
 
 test("/mute on an already-muted keyword does not duplicate it", async () => {
@@ -276,6 +311,7 @@ test("/help replies with the command list", async () => {
   assert.match(helpText, /\/military/);
   assert.match(helpText, /\/notam/);
   assert.match(helpText, /\/notmar/);
+  assert.match(helpText, /\/firms/);
 });
 
 test("a message with no text is ignored without error", async () => {

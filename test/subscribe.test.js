@@ -106,6 +106,58 @@ test("rate limit is tracked per IP, not globally", async () => {
   assert.equal(res.statusCode, 200, "a different IP must not be blocked by another IP's rate limit");
 });
 
+test("rate limit uses the LAST X-Forwarded-For entry (the proxy-appended real IP), not the first", async () => {
+  // Real bug: reading the first entry let a client bypass the rate limit
+  // entirely by sending a fresh fake leading IP on every request -- the
+  // real client IP Vercel's edge appends is always the last entry.
+  const realIp = "203.0.113.42";
+  for (let i = 0; i < 5; i++) {
+    const res = makeRes();
+    await handler(
+      {
+        method: "POST",
+        headers: { "x-forwarded-for": `1.2.3.${i}, ${realIp}` },
+        body: validSub(`https://push.example.com/spoof${i}`),
+      },
+      res
+    );
+    assert.equal(res.statusCode, 200, `attempt ${i + 1} should succeed`);
+  }
+  const res6 = makeRes();
+  await handler(
+    {
+      method: "POST",
+      headers: { "x-forwarded-for": `9.9.9.9, ${realIp}` },
+      body: validSub("https://push.example.com/spoof6"),
+    },
+    res6
+  );
+  assert.equal(res6.statusCode, 429, "varying only the fake leading IP must not reset the rate limit");
+});
+
+test("rejects an oversized p256dh key with 400", async () => {
+  const res = makeRes();
+  const sub = validSub();
+  sub.keys.p256dh = "p".repeat(500);
+  await handler({ method: "POST", headers: {}, body: sub }, res);
+  assert.equal(res.statusCode, 400);
+});
+
+test("rejects an oversized auth secret with 400", async () => {
+  const res = makeRes();
+  const sub = validSub();
+  sub.keys.auth = "a".repeat(500);
+  await handler({ method: "POST", headers: {}, body: sub }, res);
+  assert.equal(res.statusCode, 400);
+});
+
+test("rejects an oversized endpoint with 400", async () => {
+  const res = makeRes();
+  const sub = validSub("https://push.example.com/" + "x".repeat(1000));
+  await handler({ method: "POST", headers: {}, body: sub }, res);
+  assert.equal(res.statusCode, 400);
+});
+
 test("sets CORS headers on every response", async () => {
   const res = makeRes();
   await handler({ method: "POST", headers: {}, body: validSub() }, res);

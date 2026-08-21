@@ -160,19 +160,28 @@ nothing else.
 
 ## Tests
 
-`npm test` (Node's built-in test runner, no extra dependency) runs
-`test/telegram-webhook.test.js` — 16 tests covering the endpoint with
-real write access to the main repo: both auth layers (wrong/missing
-webhook secret, wrong sender chat id — each must produce zero API calls,
-not just a rejected response), every command (`/scan`, `/gpsjam`,
-`/ais`, `/mute`, `/ignore`, `/quietmode`, `/help`), and edge cases
-(no-argument usage text, an already-muted keyword not duplicating,
-`/gpsjam` and `/ais`'s dispatches actually carry their own
-`gpsjam_check`/`ais_check` input while `/scan`'s still dispatches with
-no extra inputs). Runs on every push via `.github/workflows/tests.yml`,
-same pattern as the main `baltic-monitor` repo's `tests.yml`.
+`npm test` (Node's built-in test runner, no extra dependency) runs one
+test file per function, all six now covered:
 
-The other five functions (`subscribe`/`notify`/`prune`/`admin`/`status`)
-don't have automated tests yet — `telegram-webhook.js` came first since
-it's the one with real write access to another repo, the highest-value
-place to have regression coverage. Worth adding to the others over time.
+- `test/telegram-webhook.test.js` — the endpoint with real write access
+  to the main repo: both auth layers (wrong/missing webhook secret,
+  wrong sender chat id, and an unset `TELEGRAM_WEBHOOK_SECRET` itself —
+  each must produce zero API calls, not just a rejected response), every
+  command (`/scan`, `/gpsjam`, `/ais`, `/military`, `/notam`, `/notmar`,
+  `/firms`, `/mute`, `/ignore`, `/quietmode`, `/help`), and edge cases (no-argument
+  usage text, an already-muted keyword not duplicating, a mistyped
+  command like `/mutedecision` correctly falling through as
+  unrecognized, each command's dispatch carrying its own extra input
+  while `/scan`'s still dispatches with none).
+- `test/subscribe.test.js` — validation (including max-length caps on
+  `endpoint`/`p256dh`/`auth`), per-IP rate limiting (keyed off the LAST
+  `X-Forwarded-For` entry, not the first — spoofable otherwise), the
+  capacity ceiling, and dedup-by-endpoint-hash.
+- `test/notify.test.js`, `test/prune.test.js` — send/prune decisions
+  (404/410 vs. transient failures), the 365-day age cutoff.
+- `test/admin.test.js` — auth/list/delete actions, and that no raw
+  subscription endpoint URL ever leaks into the rendered HTML.
+- `test/status.test.js` — upstream-reshaping and failure handling.
+
+Runs on every push via `.github/workflows/tests.yml`, same pattern as
+the main `baltic-monitor` repo's `tests.yml`.

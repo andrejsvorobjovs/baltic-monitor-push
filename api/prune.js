@@ -14,6 +14,21 @@ const redis = new Redis({
 
 const MAX_SUBSCRIPTION_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 
+// See notify.js's identical helper: Promise.allSettled around each
+// entry's handler stops one bad subscription from failing the batch, but
+// the hdel call itself wasn't individually guarded -- a transient
+// Upstash error mid-batch silently dropped that one task with no log
+// line, and `pruned` could quietly undercount with no visibility why.
+async function safeHdel(key, reason) {
+  try {
+    await redis.hdel("subscriptions", key);
+    return true;
+  } catch (err) {
+    console.error(`failed to delete subscription ${key} (${reason}):`, err);
+    return false;
+  }
+}
+
 function isAuthorized(req) {
   const secret = process.env.WEB_PUSH_NOTIFY_SECRET;
   if (!secret) return false;
@@ -45,8 +60,7 @@ export default async function handler(req, res) {
       try {
         sub = typeof raw === "string" ? JSON.parse(raw) : raw;
       } catch {
-        await redis.hdel("subscriptions", key);
-        pruned++;
+        if (await safeHdel(key, "unparseable")) pruned++;
         return;
       }
       // No createdAt at all shouldn't happen (subscribe.js always sets
@@ -55,8 +69,7 @@ export default async function handler(req, res) {
       // forever.
       const createdAt = sub.createdAt ? new Date(sub.createdAt).getTime() : 0;
       if (!createdAt || now - createdAt > MAX_SUBSCRIPTION_AGE_MS) {
-        await redis.hdel("subscriptions", key);
-        pruned++;
+        if (await safeHdel(key, "expired")) pruned++;
       }
     })
   );
