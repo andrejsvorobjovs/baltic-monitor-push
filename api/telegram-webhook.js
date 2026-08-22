@@ -247,6 +247,20 @@ export default async function handler(req, res) {
       // wildfires and agricultural burning trigger it too.
       await triggerScan({ firms_check: "true" });
       await replyToTelegram(chatId, "Checking NASA FIRMS satellite thermal hotspots for the Baltic -- reply coming in about 20-30 seconds.");
+    } else if (text === "/gridoutage") {
+      // Phase 1 only, same shape as /firms/gpsjam/ais/military/notam/
+      // notmar above: informational, on-demand, never touches scoring or
+      // alerting. main.py's send_entsoe_outage_status() queries the
+      // ENTSO-E Transparency Platform (the EU's official REMIT-mandated
+      // outage-reporting system) for forced generation-unit outages
+      // across Estonia/Latvia/Lithuania -- replies "not configured" if
+      // ENTSOE_API_KEY isn't set yet, same pattern as /firms. Generation
+      // outages only, not transmission/interconnector lines (a
+      // documented gap, see baltic-monitor's own ENTSOE_API_KEY block
+      // comment) -- and a forced outage is usually ordinary equipment
+      // failure, not sabotage.
+      await triggerScan({ entsoe_check: "true" });
+      await replyToTelegram(chatId, "Checking Baltic power grid outages via ENTSO-E -- reply coming in about 20-30 seconds.");
     } else if (text === "/mute" || text.startsWith("/mute ")) {
       // Was text.startsWith("/mute") with no word boundary, so a typo
       // like "/mutedecision" (no space) parsed as /mute with keyword
@@ -265,6 +279,7 @@ export default async function handler(req, res) {
         "/notam -- current Latvia NOTAMs filtered to military-relevant ones (informational only, never an alert)\n" +
         "/notmar -- current Estonia/Latvia Notices to Mariners filtered to security-relevant keywords (informational only, never an alert)\n" +
         "/firms -- NASA satellite thermal hotspot snapshot of the Baltic (informational only, not confirmed activity, never an alert)\n" +
+        "/gridoutage -- forced power-generation outages across Estonia/Latvia/Lithuania via ENTSO-E (informational only, generation only, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
