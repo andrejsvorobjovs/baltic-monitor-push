@@ -26,6 +26,23 @@ function mockUpstream(json, ok = true, status = 200) {
   });
 }
 
+// Discriminates by URL -- used for tests that need status.json,
+// chart_data.json, and map_data.json to each return distinct payloads,
+// unlike mockUpstream() above which returns the same body to all three.
+function mockMultiUpstream({ status: statusJson, chart, map }) {
+  global.fetch = async (url) => {
+    if (url.includes("chart_data.json")) {
+      if (chart === undefined) return { ok: false, status: 500, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => chart };
+    }
+    if (url.includes("map_data.json")) {
+      if (map === undefined) return { ok: false, status: 500, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => map };
+    }
+    return { ok: true, status: 200, json: async () => statusJson || {} };
+  };
+}
+
 test("OPTIONS preflight returns 204", async () => {
   const res = makeRes();
   await handler({ method: "OPTIONS" }, res);
@@ -126,4 +143,74 @@ test("sets CORS headers and a cache-control header on a successful response", as
   await handler({ method: "GET" }, res);
   assert.equal(res.headers["Access-Control-Allow-Origin"], "*");
   assert.match(res.headers["Cache-Control"], /s-maxage=300/);
+});
+
+test("escalation_index reflects the latest point from chart_data.json", async () => {
+  mockMultiUpstream({
+    status: { last_level: "WATCH" },
+    chart: {
+      escalation_index_points: [
+        { ts: "t1", deviation_pct: 10, sources_included: 2, band: "normal" },
+        { ts: "t2", deviation_pct: 42.5, sources_included: 3, band: "elevated" },
+      ],
+    },
+  });
+  const res = makeRes();
+  await handler({ method: "GET" }, res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.escalation_index, {
+    ts: "t2", deviation_pct: 42.5, sources_included: 3, band: "elevated",
+  });
+});
+
+test("escalation_index is null when chart_data.json fetch fails, without breaking the rest of the response", async () => {
+  mockMultiUpstream({ status: { last_level: "QUIET", total_scans: 5 } });
+  const res = makeRes();
+  await handler({ method: "GET" }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.escalation_index, null);
+  assert.equal(res.body.level, "QUIET");
+  assert.equal(res.body.scans.total, 5);
+});
+
+test("escalation_index is null when no scan has produced a point yet", async () => {
+  mockMultiUpstream({ status: {}, chart: { escalation_index_points: [] } });
+  const res = makeRes();
+  await handler({ method: "GET" }, res);
+  assert.equal(res.body.escalation_index, null);
+});
+
+test("map_summary reflects per-layer counts from map_data.json, not raw positions", async () => {
+  mockMultiUpstream({
+    status: {},
+    map: {
+      generated_at: "2026-08-22T15:00:00Z",
+      window_hours: 72,
+      ais: [{ lat: 1, lon: 1 }, { lat: 2, lon: 2 }],
+      military_aircraft: [{ lat: 3, lon: 3 }],
+      gpsjam_cells: [],
+      firms: [{ lat: 4, lon: 4 }, { lat: 5, lon: 5 }, { lat: 6, lon: 6 }],
+    },
+  });
+  const res = makeRes();
+  await handler({ method: "GET" }, res);
+  assert.deepEqual(res.body.map_summary, {
+    generated_at: "2026-08-22T15:00:00Z",
+    window_hours: 72,
+    ais_count: 2,
+    military_aircraft_count: 1,
+    gpsjam_cells_count: 0,
+    firms_count: 3,
+  });
+  // The raw per-vessel/aircraft arrays must not leak into this summary.
+  assert.equal(res.body.map_summary.ais, undefined);
+});
+
+test("map_summary is null when map_data.json fetch fails, without breaking the rest of the response", async () => {
+  mockMultiUpstream({ status: { last_level: "WARN" } });
+  const res = makeRes();
+  await handler({ method: "GET" }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.map_summary, null);
+  assert.equal(res.body.level, "WARN");
 });

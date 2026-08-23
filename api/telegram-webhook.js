@@ -247,27 +247,20 @@ export default async function handler(req, res) {
       // wildfires and agricultural burning trigger it too.
       await triggerScan({ firms_check: "true" });
       await replyToTelegram(chatId, "Checking NASA FIRMS satellite thermal hotspots for the Baltic -- reply coming in about 20-30 seconds.");
-    } else if (text === "/satellite" || text.startsWith("/satellite ")) {
-      // Raw Sentinel-2 imagery, deliberately NOT ML-interpreted -- see
-      // baltic-monitor's own README for the full design discussion
-      // (a dead but more advanced competitor, estwarden.eu, ran ML
-      // object detection on satellite/SAR imagery to call a garrison
-      // "empty" or "occupied"; this project deliberately does not do
-      // that). main.py's send_satellite_status() does the actual
-      // fetch/format/send via the free Copernicus Data Space Ecosystem
-      // Process API, private chat only -- replies "not configured" if
-      // CDSE_CLIENT_ID/CDSE_CLIENT_SECRET aren't set, same pattern as
-      // /ais and /firms. Unlike every other on-demand command here, this
-      // one takes an argument (the site key) -- passed through as-is
-      // (blank if none given) so send_satellite_status() itself decides
-      // whether that's a valid site or falls back to listing the
-      // available ones; scan.yml's satellite_check input mirrors this
-      // same "a value, not just true/false" shape.
-      const site = text.slice("/satellite".length).trim();
-      await triggerScan({ satellite_check: site || "list" });
-      await replyToTelegram(chatId, site
-        ? `Checking raw satellite imagery for "${site}" -- reply coming in about 30-60 seconds.`
-        : "Checking available satellite imagery sites -- reply coming in a few seconds. Send /satellite <site> for a specific one.");
+    } else if (text === "/gridoutage") {
+      // Phase 1 only, same shape as /firms/gpsjam/ais/military/notam/
+      // notmar above: informational, on-demand, never touches scoring or
+      // alerting. main.py's send_entsoe_outage_status() queries the
+      // ENTSO-E Transparency Platform (the EU's official REMIT-mandated
+      // outage-reporting system) for forced generation-unit outages
+      // across Estonia/Latvia/Lithuania -- replies "not configured" if
+      // ENTSOE_API_KEY isn't set yet, same pattern as /firms. Generation
+      // outages only, not transmission/interconnector lines (a
+      // documented gap, see baltic-monitor's own ENTSOE_API_KEY block
+      // comment) -- and a forced outage is usually ordinary equipment
+      // failure, not sabotage.
+      await triggerScan({ entsoe_check: "true" });
+      await replyToTelegram(chatId, "Checking Baltic power grid outages via ENTSO-E -- reply coming in about 20-30 seconds.");
     } else if (text === "/mute" || text.startsWith("/mute ")) {
       // Was text.startsWith("/mute") with no word boundary, so a typo
       // like "/mutedecision" (no space) parsed as /mute with keyword
@@ -286,7 +279,7 @@ export default async function handler(req, res) {
         "/notam -- current Latvia NOTAMs filtered to military-relevant ones (informational only, never an alert)\n" +
         "/notmar -- current Estonia/Latvia Notices to Mariners filtered to security-relevant keywords (informational only, never an alert)\n" +
         "/firms -- NASA satellite thermal hotspot snapshot of the Baltic (informational only, not confirmed activity, never an alert)\n" +
-        "/satellite [site] -- raw Sentinel-2 satellite photo of a named site (no argument lists sites); raw imagery only, no ML interpretation, never an alert\n" +
+        "/gridoutage -- forced power-generation outages across Estonia/Latvia/Lithuania via ENTSO-E (informational only, generation only, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
     }
