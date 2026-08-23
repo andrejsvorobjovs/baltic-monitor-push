@@ -13,6 +13,15 @@
 // fully public on the landing page, so there's nothing here that needs
 // gating the way api/subscribe.js does.
 const SOURCE_URL = "https://balticsignalmonitor.com/status.json";
+// Two more upstream files added after this endpoint's initial ship --
+// this predates both the Composite Escalation Index and the live map,
+// so the "documented public API" gap was real, not just a nice-to-have.
+// Each is fetched independently and degrades to null on its own failure
+// (see fetchJsonSafe()) rather than taking the whole endpoint down --
+// status.json is the core contract this endpoint has always served, so
+// a chart_data.json/map_data.json hiccup shouldn't break that.
+const CHART_DATA_URL = "https://balticsignalmonitor.com/chart_data.json";
+const MAP_DATA_URL = "https://balticsignalmonitor.com/map_data.json";
 const SCHEMA_VERSION = 1;
 const FETCH_TIMEOUT_MS = 5000;
 
@@ -55,6 +64,27 @@ function mapItem(it) {
   };
 }
 
+// Fetches one upstream JSON file, returning null on any failure (bad
+// status, timeout, network error, bad JSON) instead of throwing --
+// used for the two supplementary files (chart_data.json/map_data.json)
+// where a failure should degrade that one field to null, not take the
+// whole response down. status.json itself is NOT fetched through this
+// helper, since its failure is still a hard 502 -- see handler() below.
+async function fetchJsonSafe(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, { signal: controller.signal, cache: "no-store" });
+    if (!r.ok) throw new Error(`upstream responded ${r.status}`);
+    return await r.json();
+  } catch (err) {
+    console.error(`status.js: failed to fetch ${url}:`, err);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -91,7 +121,17 @@ export default async function handler(req, res) {
     clearTimeout(timeout);
   }
 
+  // Fetched in parallel, not sequentially after the status.json fetch
+  // above -- these two are independent of it and of each other, so
+  // there's no reason to pay their latency one after another.
+  const [chartData, mapData] = await Promise.all([
+    fetchJsonSafe(CHART_DATA_URL),
+    fetchJsonSafe(MAP_DATA_URL),
+  ]);
+
   const d = upstream;
+  const eidxPoints = chartData?.escalation_index_points || [];
+  const latestEidx = eidxPoints.length ? eidxPoints[eidxPoints.length - 1] : null;
   const body = {
     schema_version: SCHEMA_VERSION,
     level: d.last_level || "UNKNOWN",
@@ -111,6 +151,33 @@ export default async function handler(req, res) {
       tier3: d.tier3_sources ?? null,
     },
     corrections_count: d.correction_count ?? null,
+    // Current value only, not the full series -- the complete history is
+    // already published separately at /escalation_export.csv, so
+    // duplicating it here would be redundant. null (both the object
+    // itself and each field within it) if chart_data.json couldn't be
+    // fetched this request, or if no scan has produced a value yet.
+    escalation_index: latestEidx
+      ? {
+          ts: latestEidx.ts || null,
+          deviation_pct: latestEidx.deviation_pct ?? null,
+          sources_included: latestEidx.sources_included ?? null,
+          band: latestEidx.band || null,
+        }
+      : null,
+    // Counts only, not the raw per-vessel/aircraft/cell positions -- the
+    // full raw data is already public at /map_data.json directly for
+    // anyone who wants it; this is a lightweight summary for a caller
+    // that just wants "how much is currently being tracked."
+    map_summary: mapData
+      ? {
+          generated_at: mapData.generated_at || null,
+          window_hours: mapData.window_hours ?? null,
+          ais_count: (mapData.ais || []).length,
+          military_aircraft_count: (mapData.military_aircraft || []).length,
+          gpsjam_cells_count: (mapData.gpsjam_cells || []).length,
+          firms_count: (mapData.firms || []).length,
+        }
+      : null,
     recent_scans: (d.recent_history || []).map(mapScanEntry),
     recent_items: (d.recent_items || []).map(mapItem),
     recent_corrections: (d.recent_corrections || []).map((c) => ({
