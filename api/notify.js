@@ -41,6 +41,34 @@ async function safeHdel(key, reason) {
   }
 }
 
+// A push service returning 429/500/502/503/504 is busy or briefly broken,
+// not refusing the message. Before this, one such response meant that
+// subscriber silently missed the alert entirely — no retry, and the only
+// record was a `failed` count printed into a GitHub Actions log nobody
+// reads. For a warning system that is the wrong failure mode: the whole
+// point is that the alert arrives.
+//
+// One retry, short delay. Deliberately not more: this runs in a
+// serverless function with a wall-clock limit, and every subscription is
+// retried in parallel, so a long backoff risks timing out the batch and
+// losing the sends that would otherwise have succeeded.
+const RETRYABLE_PUSH_STATUS = new Set([429, 500, 502, 503, 504]);
+const PUSH_RETRY_DELAY_MS = 1000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function sendWithOneRetry(sub, payload) {
+  try {
+    await webpush.sendNotification(sub, payload);
+    return { ok: true, retried: false };
+  } catch (err) {
+    if (!RETRYABLE_PUSH_STATUS.has(err && err.statusCode)) throw err;
+    await sleep(PUSH_RETRY_DELAY_MS);
+    await webpush.sendNotification(sub, payload);
+    return { ok: true, retried: true };
+  }
+}
+
 function isAuthorized(req) {
   const secret = process.env.WEB_PUSH_NOTIFY_SECRET;
   if (!secret) return false;
@@ -80,6 +108,7 @@ export default async function handler(req, res) {
   let sent = 0;
   let pruned = 0;
   let failed = 0;
+  let retried = 0;
 
   await Promise.allSettled(
     entries.map(async ([key, raw]) => {
@@ -96,8 +125,9 @@ export default async function handler(req, res) {
         return;
       }
       try {
-        await webpush.sendNotification(sub, payload);
+        const result = await sendWithOneRetry(sub, payload);
         sent++;
+        if (result.retried) retried++;
       } catch (err) {
         const statusCode = err && err.statusCode;
         // 404/410 = permanently dead (uninstalled, permission revoked,
@@ -113,5 +143,9 @@ export default async function handler(req, res) {
     })
   );
 
-  res.status(200).json({ ok: true, sent, pruned, failed, total: entries.length });
+  // `retried` is reported so a push service degrading shows up as a
+  // trend before it starts costing deliveries outright.
+  res
+    .status(200)
+    .json({ ok: true, sent, pruned, failed, retried, total: entries.length });
 }

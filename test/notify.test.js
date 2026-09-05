@@ -82,7 +82,82 @@ test("no stored subscriptions: sends nothing, reports zero counts", async () => 
   const res = makeRes();
   await handler(authedReq({ title: "WATCH", body: "something happened" }), res);
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.body, { ok: true, sent: 0, pruned: 0, failed: 0, total: 0 });
+  assert.deepEqual(res.body, {
+    ok: true, sent: 0, pruned: 0, failed: 0, retried: 0, total: 0,
+  });
+});
+
+// A push service returning 429/5xx is busy, not refusing the message.
+// Before this, one such response meant that subscriber silently missed the
+// alert outright — the wrong failure mode for a warning system.
+test("a transient push failure is retried once and then counted as sent", async () => {
+  await seedSubscription("sub1", { ageDays: 1 });
+  let attempts = 0;
+  fakeWebPush.sendNotification = async () => {
+    attempts++;
+    if (attempts === 1) {
+      const err = new Error("service busy");
+      err.statusCode = 503;
+      throw err;
+    }
+    return {};
+  };
+  const res = makeRes();
+  await handler(authedReq({ title: "WARN", body: "x" }), res);
+  assert.equal(attempts, 2);
+  assert.equal(res.body.sent, 1);
+  assert.equal(res.body.retried, 1);
+  assert.equal(res.body.failed, 0);
+});
+
+test("a transient failure that persists is counted as failed, not retried forever", async () => {
+  await seedSubscription("sub1", { ageDays: 1 });
+  let attempts = 0;
+  fakeWebPush.sendNotification = async () => {
+    attempts++;
+    const err = new Error("still busy");
+    err.statusCode = 429;
+    throw err;
+  };
+  const res = makeRes();
+  await handler(authedReq({ title: "WARN", body: "x" }), res);
+  assert.equal(attempts, 2, "exactly one retry, no more");
+  assert.equal(res.body.failed, 1);
+  assert.equal(res.body.sent, 0);
+});
+
+test("a dead subscription is pruned without being retried", async () => {
+  await seedSubscription("sub1", { ageDays: 1 });
+  let attempts = 0;
+  fakeWebPush.sendNotification = async () => {
+    attempts++;
+    const err = new Error("gone");
+    err.statusCode = 410;
+    throw err;
+  };
+  const res = makeRes();
+  await handler(authedReq({ title: "WARN", body: "x" }), res);
+  assert.equal(attempts, 1, "410 is permanent — retrying it wastes the batch's time");
+  assert.equal(res.body.pruned, 1);
+  assert.equal(res.body.retried, 0);
+});
+
+test("one subscriber's transient failure does not stop another's delivery", async () => {
+  await seedSubscription("bad", { ageDays: 1, endpoint: "https://push.example.com/bad" });
+  await seedSubscription("good", { ageDays: 1, endpoint: "https://push.example.com/good" });
+  fakeWebPush.sendNotification = async (sub) => {
+    if (sub.endpoint.endsWith("/bad")) {
+      const err = new Error("busy");
+      err.statusCode = 500;
+      throw err;
+    }
+    return {};
+  };
+  const res = makeRes();
+  await handler(authedReq({ title: "WARN", body: "x" }), res);
+  assert.equal(res.body.sent, 1);
+  assert.equal(res.body.failed, 1);
+  assert.equal(res.body.total, 2);
 });
 
 test("a fresh, deliverable subscription gets sent to and counted", async () => {
