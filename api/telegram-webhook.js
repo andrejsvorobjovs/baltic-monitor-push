@@ -133,6 +133,13 @@ async function handleMuteOrIgnore(field, value, chatId) {
 // own output. A human says genuine or noise; the number is published with
 // its sample size and a plain statement of who judged it.
 const MAX_JUDGEMENTS = 2000;   // ~3 years of alerts at the current rate
+// Reserved id for the judging fire drill (main.py's JUDGE_DRILL_ALERT_ID).
+// A drill verdict is written for real -- the write is the part most likely
+// to break, and a drill that skipped it would prove the least interesting
+// half -- but main.py never counts it, because no history entry can carry
+// this id. Kept in sync by the shape check in the test suite, not by
+// import: these two repos deploy independently.
+const JUDGE_DRILL_ALERT_ID = "0000-0000";
 
 async function recordJudgement(alertId, verdict, chatId, { quiet = false } = {}) {
   if (!/^[0-9]{4}-[0-9]{4}$/.test(alertId || "")) {
@@ -156,13 +163,71 @@ async function recordJudgement(alertId, verdict, chatId, { quiet = false } = {})
   }
   await writeRepoJson("alert_judgements.json", content, sha,
     `Judge alert ${alertId}: ${verdict} [skip ci]`);
-  if (!quiet) {
+  // A drill always replies in the chat, even from a button tap. The
+  // callback toast is transient and easy to miss, and the entire point of
+  // the drill is that a human can see, in writing, that the tap made it
+  // all the way to a committed file.
+  const isDrill = alertId === JUDGE_DRILL_ALERT_ID;
+  if (isDrill) {
+    await replyToTelegram(chatId,
+      `Drill verdict "${verdict}" written to the judgement log. ` +
+      `The whole path works: button -> webhook -> repo. ` +
+      `This reserved id is never counted towards the published accuracy figure.`);
+  } else if (!quiet) {
     await replyToTelegram(chatId,
       previous && previous !== verdict
         ? `Alert ${alertId} changed from ${previous} to ${verdict}.`
         : `Alert ${alertId} recorded as ${verdict}. It reaches the site on the next scan.`);
   }
   return true;
+}
+
+// The id a history entry is judged under -- mirrors main.py's
+// alert_entry_id(). Entries logged before judging existed carry no
+// alert_id, and the id is a pure function of the UTC timestamp, so it is
+// derived rather than backfilled. Both sides derive it the same way, in
+// UTC, so the id shown here is the id main.py will match against.
+function alertEntryId(entry) {
+  if (entry && entry.alert_id) return entry.alert_id;
+  const ts = new Date(entry && entry.ts);
+  if (Number.isNaN(ts.getTime())) return null;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(ts.getUTCMonth() + 1)}${p(ts.getUTCDate())}-${p(ts.getUTCHours())}${p(ts.getUTCMinutes())}`;
+}
+
+// Lists the alerts still waiting on a verdict, newest first, so the
+// backlog is actually workable from the phone. A bare count told the
+// owner there was work to do without telling them what it was -- which
+// is how a backlog stays a backlog.
+async function handleUnjudged(chatId) {
+  const [{ content: judgeFile }, { content: history }] = await Promise.all([
+    readRepoJson("alert_judgements.json"),
+    readRepoJson("history.json"),
+  ]);
+  const judged = new Set(
+    (Array.isArray(judgeFile.judgements) ? judgeFile.judgements : [])
+      .filter((j) => j && (j.verdict === "genuine" || j.verdict === "noise"))
+      .map((j) => j.id)
+  );
+  const entries = Array.isArray(history.entries) ? history.entries : [];
+  const pending = entries
+    .filter((e) => e && (e.level === "WATCH" || e.level === "WARN"))
+    .map((e) => ({ id: alertEntryId(e), headline: (e.items && e.items[0] && e.items[0].title) || "" }))
+    .filter((a) => a.id && !judged.has(a.id))
+    .reverse()
+    .slice(0, 12);
+
+  if (pending.length === 0) {
+    await replyToTelegram(chatId,
+      `${judged.size} alert(s) judged, nothing pending. The site publishes a precision figure once 10 are in, always alongside how many are still unjudged.`);
+    return;
+  }
+  const lines = pending.map((a) => `/genuine ${a.id}  -  ${a.headline.slice(0, 70)}`);
+  await replyToTelegram(chatId,
+    `${judged.size} judged so far. Newest ${pending.length} still waiting ` +
+    `(tap a command to copy it, swap /genuine for /noise as needed):\n\n` +
+    lines.join("\n") +
+    `\n\nThe site publishes a precision figure once 10 are in, always alongside how many are still unjudged.`);
 }
 
 // Telegram expects every callback query to be answered, otherwise the
@@ -362,10 +427,7 @@ export default async function handler(req, res) {
       const arg = text.split(/\s+/)[1] || "";
       await recordJudgement(arg, verdict, chatId);
     } else if (text === "/unjudged") {
-      const { content } = await readRepoJson("alert_judgements.json");
-      const n = Array.isArray(content.judgements) ? content.judgements.length : 0;
-      await replyToTelegram(chatId,
-        `${n} alert(s) judged so far. The site publishes a precision figure once 10 are in, always alongside how many are still unjudged.`);
+      await handleUnjudged(chatId);
     } else if (text === "/help" || text === "/start") {
       await replyToTelegram(chatId,
         "Commands:\n/scan -- trigger a scan now\n/gpsjam -- check today's Baltic GPS-jamming picture (informational only, never an alert)\n" +
@@ -379,7 +441,7 @@ export default async function handler(req, res) {
         "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat\n" +
         "/genuine <id> -- mark an alert as a real signal (or just tap the button under it)\n" +
         "/noise <id> -- mark an alert as noise\n" +
-        "/unjudged -- how many alerts have been judged so far");
+        "/unjudged -- list the alerts still waiting on a verdict");
     }
     // Anything else: no reply, matches the old polling listener's behavior
     // of only responding to recognized commands.

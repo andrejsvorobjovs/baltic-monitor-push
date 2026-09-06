@@ -14,6 +14,7 @@ let savedEnv;
 let savedFetch;
 let calls;
 let judgementSeed;
+let historySeed;
 
 beforeEach(() => {
   savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -25,6 +26,7 @@ beforeEach(() => {
   savedFetch = global.fetch;
   calls = [];
   judgementSeed = [];
+  historySeed = [];
   global.fetch = async (url, opts) => {
     calls.push({ url, opts });
     if (url.includes("/dispatches")) {
@@ -60,6 +62,16 @@ beforeEach(() => {
         json: async () => ({
           content: Buffer.from(JSON.stringify({ judgements: judgementSeed })).toString("base64"),
           sha: "jjj777",
+        }),
+      };
+    }
+    if (url.includes("/contents/history.json")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: Buffer.from(JSON.stringify({ entries: historySeed })).toString("base64"),
+          sha: "hhh555",
         }),
       };
     }
@@ -357,6 +369,12 @@ function putBody(pathFragment) {
   const c = calls.find((c) => c.url.includes(pathFragment) && c.opts?.method === "PUT");
   return c ? JSON.parse(Buffer.from(JSON.parse(c.opts.body).content, "base64").toString("utf-8")) : null;
 }
+// Every message the bot actually sent back, in order.
+function telegramTexts() {
+  return calls
+    .filter((c) => String(c.url).includes("/sendMessage"))
+    .map((c) => JSON.parse(c.opts.body).text);
+}
 function callbackReq(data, chatId = 999888, secret = "wh-secret-123") {
   return makeReq({ callback_query: { id: "cb1", data, message: { chat: { id: chatId } } } }, secret);
 }
@@ -427,4 +445,125 @@ test("/help lists the judging commands", async () => {
   await handler(makeReq({ message: { text: "/help", chat: { id: 999888 } } }, "wh-secret-123"), makeRes());
   const reply = calls.find((c) => c.url.includes("sendMessage"));
   assert.match(JSON.parse(reply.opts.body).text, /\/genuine/);
+});
+
+// --- The judging fire drill -----------------------------------------------
+// The judging loop shipped fully unit-tested on both sides and had never
+// once run end to end: the first scan after it came back QUIET, so no
+// prompt was ever delivered and no tap was ever recorded. The drill uses a
+// reserved id so a human can close the loop on demand without touching the
+// published figure.
+
+test("a drill tap is written for real -- the write is the part most likely to break", async () => {
+  const res = makeRes();
+  await handler(callbackReq("judge:genuine:0000-0000"), res);
+  assert.equal(res.statusCode, 200);
+  const saved = putBody("alert_judgements.json");
+  assert.equal(saved.judgements.length, 1);
+  assert.equal(saved.judgements[0].id, "0000-0000");
+  assert.equal(saved.judgements[0].verdict, "genuine");
+});
+
+test("a drill tap replies in the chat even though button taps are otherwise quiet", async () => {
+  // The callback toast is transient and easy to miss, and the whole point
+  // of the drill is that a human can SEE the tap reached a committed file.
+  await handler(callbackReq("judge:noise:0000-0000"), makeRes());
+  const texts = telegramTexts();
+  assert.equal(texts.length, 1, "expected exactly one chat reply for a drill tap");
+  assert.match(texts[0], /drill/i);
+  assert.match(texts[0], /never counted/i);
+});
+
+test("an ordinary tap stays silent in the chat -- only the drill is chatty", async () => {
+  await handler(callbackReq("judge:genuine:0906-1153"), makeRes());
+  assert.deepEqual(telegramTexts(), []);
+});
+
+test("a drill tap is still answered, so the button does not spin forever", async () => {
+  await handler(callbackReq("judge:genuine:0000-0000"), makeRes());
+  assert.ok(fetchUrls().some((u) => u.includes("answerCallbackQuery")));
+});
+
+test("the drill id matches the shape the webhook accepts -- it must travel the real path", async () => {
+  // If the reserved id ever stopped passing the id regex, the drill would
+  // exercise the rejection path instead of the path it exists to prove.
+  await handler(callbackReq("judge:genuine:0000-0000"), makeRes());
+  assert.notEqual(putBody("alert_judgements.json"), null);
+});
+
+test("a stranger cannot fire the drill either", async () => {
+  const res = makeRes();
+  await handler(callbackReq("judge:genuine:0000-0000", 123456), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(putBody("alert_judgements.json"), null);
+  assert.deepEqual(telegramTexts(), []);
+});
+
+// --- /unjudged ------------------------------------------------------------
+
+test("/unjudged lists the pending alerts, not just a count", async () => {
+  // A bare count told the owner there was work without telling them what
+  // it was, which is how a backlog stays a backlog.
+  historySeed = [
+    { ts: "2026-09-06T11:53:00+00:00", level: "WATCH", items: [{ title: "Drone over Siauliai" }] },
+    { ts: "2026-09-05T09:10:00+00:00", level: "QUIET", items: [] },
+    { ts: "2026-09-04T07:05:00+00:00", level: "WARN", alert_id: "0904-0705", items: [{ title: "Cable damaged" }] },
+  ];
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/unjudged" } }, "wh-secret-123"), res);
+  const text = telegramTexts()[0];
+  assert.match(text, /\/genuine 0906-1153/, "derives an id for a legacy entry with none stored");
+  assert.match(text, /Drone over Siauliai/);
+  assert.match(text, /\/genuine 0904-0705/, "uses the stored id when there is one");
+  assert.doesNotMatch(text, /QUIET/, "a QUIET scan is never judged");
+});
+
+test("/unjudged omits alerts that already have a verdict", async () => {
+  historySeed = [
+    { ts: "2026-09-06T11:53:00+00:00", level: "WATCH", items: [{ title: "Already judged" }] },
+    { ts: "2026-09-06T12:40:00+00:00", level: "WATCH", items: [{ title: "Still pending" }] },
+  ];
+  judgementSeed = [{ id: "0906-1153", verdict: "genuine", judged_at: "2026-09-06T12:00:00Z" }];
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/unjudged" } }, "wh-secret-123"), makeRes());
+  const text = telegramTexts()[0];
+  assert.doesNotMatch(text, /Already judged/);
+  assert.match(text, /Still pending/);
+});
+
+test("/unjudged says so plainly when the backlog is empty", async () => {
+  historySeed = [
+    { ts: "2026-09-06T11:53:00+00:00", level: "WATCH", items: [{ title: "Judged" }] },
+  ];
+  judgementSeed = [{ id: "0906-1153", verdict: "noise", judged_at: "2026-09-06T12:00:00Z" }];
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/unjudged" } }, "wh-secret-123"), makeRes());
+  assert.match(telegramTexts()[0], /nothing pending/i);
+});
+
+test("/unjudged derives the same id main.py does, in UTC", async () => {
+  // Both sides derive a legacy alert's id from its timestamp. If they
+  // disagreed by an hour, every id this listing offers would match
+  // nothing on the scan side.
+  historySeed = [
+    { ts: "2026-09-06T14:53:00+03:00", level: "WATCH", items: [{ title: "Offset timestamp" }] },
+  ];
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/unjudged" } }, "wh-secret-123"), makeRes());
+  assert.match(telegramTexts()[0], /\/genuine 0906-1153/);
+});
+
+test("/unjudged caps the listing rather than sending an unreadable wall", async () => {
+  historySeed = Array.from({ length: 40 }, (_, i) => ({
+    ts: `2026-09-06T${String(i % 24).padStart(2, "0")}:${String(i).padStart(2, "0")}:00+00:00`,
+    level: "WATCH",
+    items: [{ title: `Alert ${i}` }],
+  }));
+  await handler(makeReq({ message: { chat: { id: 999888 }, text: "/unjudged" } }, "wh-secret-123"), makeRes());
+  const lines = telegramTexts()[0].split("\n").filter((l) => l.startsWith("/genuine"));
+  assert.equal(lines.length, 12);
+});
+
+test("/unjudged is refused to a stranger like every other command", async () => {
+  const res = makeRes();
+  await handler(makeReq({ message: { chat: { id: 123456 }, text: "/unjudged" } }, "wh-secret-123"), res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(telegramTexts(), []);
 });
