@@ -124,6 +124,59 @@ async function handleMuteOrIgnore(field, value, chatId) {
   await replyToTelegram(chatId, `Added "${value}" to ${field === "muted_keywords" ? "muted keywords" : "ignored sources"}. Takes effect on the next scan.`);
 }
 
+// Verdicts on individual alerts, appended to alert_judgements.json in the
+// main repo. main.py's compute_alert_accuracy() joins them against the
+// scans that actually alerted to produce the accuracy figure published on
+// the site.
+//
+// The whole point of this file is that a keyword scorer cannot grade its
+// own output. A human says genuine or noise; the number is published with
+// its sample size and a plain statement of who judged it.
+const MAX_JUDGEMENTS = 2000;   // ~3 years of alerts at the current rate
+
+async function recordJudgement(alertId, verdict, chatId, { quiet = false } = {}) {
+  if (!/^[0-9]{4}-[0-9]{4}$/.test(alertId || "")) {
+    if (!quiet) await replyToTelegram(chatId, `That does not look like an alert id: "${alertId}". They look like 0906-1153.`);
+    return false;
+  }
+  const { content, sha } = await readRepoJson("alert_judgements.json");
+  content.judgements = Array.isArray(content.judgements) ? content.judgements : [];
+  // Re-judging is allowed and overwrites: a mistap should be correctable
+  // by simply tapping the other button, not by editing a file by hand.
+  const existing = content.judgements.find((j) => j && j.id === alertId);
+  const previous = existing ? existing.verdict : null;
+  if (existing) {
+    existing.verdict = verdict;
+    existing.judged_at = new Date().toISOString();
+  } else {
+    content.judgements.push({ id: alertId, verdict, judged_at: new Date().toISOString() });
+  }
+  if (content.judgements.length > MAX_JUDGEMENTS) {
+    content.judgements = content.judgements.slice(-MAX_JUDGEMENTS);
+  }
+  await writeRepoJson("alert_judgements.json", content, sha,
+    `Judge alert ${alertId}: ${verdict} [skip ci]`);
+  if (!quiet) {
+    await replyToTelegram(chatId,
+      previous && previous !== verdict
+        ? `Alert ${alertId} changed from ${previous} to ${verdict}.`
+        : `Alert ${alertId} recorded as ${verdict}. It reaches the site on the next scan.`);
+  }
+  return true;
+}
+
+// Telegram expects every callback query to be answered, otherwise the
+// button keeps spinning on the user's phone.
+async function answerCallback(callbackId, text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+  await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackId, text }),
+  }).catch(() => {});
+}
+
 async function handleQuietMode(chatId) {
   const { content, sha } = await readRepoJson("settings.json");
   content.escalation_only = !content.escalation_only;
@@ -156,6 +209,36 @@ export default async function handler(req, res) {
     // a bad secret token means this isn't even a genuine Telegram
     // delivery, so there's no "don't make Telegram retry" concern.
     res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+
+  // Button taps arrive as callback_query, not message. Handled first and
+  // separately: it is the path that actually gets used, since one tap is
+  // the difference between judging alerts daily and never doing it.
+  const callback = req.body?.callback_query;
+  if (callback) {
+    const cbChat = callback.message?.chat?.id;
+    const ownerId = process.env.TELEGRAM_OWNER_CHAT_ID;
+    // Same owner check as commands — a stranger who somehow got the
+    // callback data must not be able to grade this project's accuracy.
+    if (!ownerId || String(cbChat) !== String(ownerId)) {
+      res.status(200).json({ ok: true });
+      return;
+    }
+    const m = /^judge:(genuine|noise):([0-9]{4}-[0-9]{4})$/.exec(callback.data || "");
+    if (!m) {
+      await answerCallback(callback.id, "");
+      res.status(200).json({ ok: true });
+      return;
+    }
+    try {
+      await recordJudgement(m[2], m[1], cbChat, { quiet: true });
+      await answerCallback(callback.id, m[1] === "genuine" ? "Recorded: genuine" : "Recorded: noise");
+    } catch (err) {
+      console.error("telegram-webhook: judgement failed:", err);
+      await answerCallback(callback.id, "Could not save that — try again");
+    }
+    res.status(200).json({ ok: true });
     return;
   }
 
@@ -271,6 +354,18 @@ export default async function handler(req, res) {
       await handleMuteOrIgnore("ignored_sources", text.slice("/ignore".length).trim(), chatId);
     } else if (text === "/quietmode") {
       await handleQuietMode(chatId);
+    } else if (text.startsWith("/genuine") || text.startsWith("/noise")) {
+      // Typed fallback for when the buttons are unavailable — an old
+      // message whose keyboard Telegram has dropped, or a desktop client
+      // being awkward.
+      const verdict = text.startsWith("/genuine") ? "genuine" : "noise";
+      const arg = text.split(/\s+/)[1] || "";
+      await recordJudgement(arg, verdict, chatId);
+    } else if (text === "/unjudged") {
+      const { content } = await readRepoJson("alert_judgements.json");
+      const n = Array.isArray(content.judgements) ? content.judgements.length : 0;
+      await replyToTelegram(chatId,
+        `${n} alert(s) judged so far. The site publishes a precision figure once 10 are in, always alongside how many are still unjudged.`);
     } else if (text === "/help" || text === "/start") {
       await replyToTelegram(chatId,
         "Commands:\n/scan -- trigger a scan now\n/gpsjam -- check today's Baltic GPS-jamming picture (informational only, never an alert)\n" +
@@ -281,7 +376,10 @@ export default async function handler(req, res) {
         "/firms -- NASA satellite thermal hotspot snapshot of the Baltic (informational only, not confirmed activity, never an alert)\n" +
         "/gridoutage -- forced power-generation outages across Estonia/Latvia/Lithuania via ENTSO-E (informational only, generation only, never an alert)\n" +
         "/mute <keyword> -- mute a keyword\n" +
-        "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat");
+        "/ignore <source name> -- ignore a source\n/quietmode -- toggle quiet mode for this chat\n" +
+        "/genuine <id> -- mark an alert as a real signal (or just tap the button under it)\n" +
+        "/noise <id> -- mark an alert as noise\n" +
+        "/unjudged -- how many alerts have been judged so far");
     }
     // Anything else: no reply, matches the old polling listener's behavior
     // of only responding to recognized commands.

@@ -13,6 +13,7 @@ const ENV_KEYS = ["TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_OWNER_CHAT_ID", "TELEGRAM
 let savedEnv;
 let savedFetch;
 let calls;
+let judgementSeed;
 
 beforeEach(() => {
   savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -23,6 +24,7 @@ beforeEach(() => {
 
   savedFetch = global.fetch;
   calls = [];
+  judgementSeed = [];
   global.fetch = async (url, opts) => {
     calls.push({ url, opts });
     if (url.includes("/dispatches")) {
@@ -47,6 +49,17 @@ beforeEach(() => {
         json: async () => ({
           content: Buffer.from(JSON.stringify({ escalation_only: false })).toString("base64"),
           sha: "def456",
+        }),
+      };
+    }
+    if (url.includes("/contents/alert_judgements.json")) {
+      if (opts?.method === "PUT") return { ok: true, status: 200, json: async () => ({}) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: Buffer.from(JSON.stringify({ judgements: judgementSeed })).toString("base64"),
+          sha: "jjj777",
         }),
       };
     }
@@ -332,4 +345,86 @@ test("a message with no text is ignored without error", async () => {
   await handler(makeReq({ message: { chat: { id: 999888 } } }, "wh-secret-123"), res);
   assert.equal(res.statusCode, 200);
   assert.equal(calls.length, 0);
+});
+
+
+// --- Alert judging -------------------------------------------------------
+// The published accuracy figure is only worth anything if a stranger cannot
+// grade this project's own alerts. Same two auth layers as every other
+// command, plus id validation.
+
+function putBody(pathFragment) {
+  const c = calls.find((c) => c.url.includes(pathFragment) && c.opts?.method === "PUT");
+  return c ? JSON.parse(Buffer.from(JSON.parse(c.opts.body).content, "base64").toString("utf-8")) : null;
+}
+function callbackReq(data, chatId = 999888, secret = "wh-secret-123") {
+  return makeReq({ callback_query: { id: "cb1", data, message: { chat: { id: chatId } } } }, secret);
+}
+
+test("tapping Genuine records the verdict", async () => {
+  const res = makeRes();
+  await handler(callbackReq("judge:genuine:0906-1153"), res);
+  assert.equal(res.statusCode, 200);
+  const saved = putBody("alert_judgements.json");
+  assert.equal(saved.judgements.length, 1);
+  assert.equal(saved.judgements[0].id, "0906-1153");
+  assert.equal(saved.judgements[0].verdict, "genuine");
+});
+
+test("tapping Noise records the opposite verdict", async () => {
+  await handler(callbackReq("judge:noise:0906-1153"), makeRes());
+  assert.equal(putBody("alert_judgements.json").judgements[0].verdict, "noise");
+});
+
+test("the button is always answered so it stops spinning", async () => {
+  await handler(callbackReq("judge:genuine:0906-1153"), makeRes());
+  assert.ok(calls.some((c) => c.url.includes("answerCallbackQuery")));
+});
+
+test("re-tapping overwrites instead of adding a second verdict", async () => {
+  judgementSeed = [{ id: "0906-1153", verdict: "genuine", judged_at: "2026-09-06T10:00:00Z" }];
+  await handler(callbackReq("judge:noise:0906-1153"), makeRes());
+  const saved = putBody("alert_judgements.json");
+  assert.equal(saved.judgements.length, 1, "a mistap must be correctable, not double-counted");
+  assert.equal(saved.judgements[0].verdict, "noise");
+});
+
+test("a stranger's button tap is ignored and writes nothing", async () => {
+  const res = makeRes();
+  await handler(callbackReq("judge:genuine:0906-1153", 123456), res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(putBody("alert_judgements.json"), null);
+});
+
+test("a callback without the Telegram secret is rejected outright", async () => {
+  const res = makeRes();
+  await handler(callbackReq("judge:genuine:0906-1153", 999888, "wrong"), res);
+  assert.equal(res.statusCode, 401);
+  assert.equal(putBody("alert_judgements.json"), null);
+});
+
+test("malformed callback data writes nothing", async () => {
+  for (const data of ["judge:maybe:0906-1153", "judge:genuine:nope", "rm -rf", ""]) {
+    calls.length = 0;
+    await handler(callbackReq(data), makeRes());
+    assert.equal(putBody("alert_judgements.json"), null, `accepted: ${data}`);
+  }
+});
+
+test("/genuine works as a typed fallback", async () => {
+  await handler(makeReq({ message: { text: "/genuine 0906-1153", chat: { id: 999888 } } }, "wh-secret-123"), makeRes());
+  assert.equal(putBody("alert_judgements.json").judgements[0].verdict, "genuine");
+});
+
+test("/noise with a bad id is refused with an explanation", async () => {
+  await handler(makeReq({ message: { text: "/noise banana", chat: { id: 999888 } } }, "wh-secret-123"), makeRes());
+  assert.equal(putBody("alert_judgements.json"), null);
+  const reply = calls.find((c) => c.url.includes("sendMessage"));
+  assert.match(JSON.parse(reply.opts.body).text, /does not look like an alert id/);
+});
+
+test("/help lists the judging commands", async () => {
+  await handler(makeReq({ message: { text: "/help", chat: { id: 999888 } } }, "wh-secret-123"), makeRes());
+  const reply = calls.find((c) => c.url.includes("sendMessage"));
+  assert.match(JSON.parse(reply.opts.body).text, /\/genuine/);
 });
